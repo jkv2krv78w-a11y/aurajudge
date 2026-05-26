@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+
+const FREE_SCAN_LIMIT = 3;
 
 export default function Home() {
   const [image, setImage] = useState(null);
@@ -9,16 +11,22 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState("");
   const [onlineUsers, setOnlineUsers] = useState(12482);
-
-  const cardRef = useRef(null);
+  const [scanCount, setScanCount] = useState(0);
+  const [showPremium, setShowPremium] = useState(false);
 
   useEffect(() => {
+    const savedCount = localStorage.getItem("aurajudge_scans");
+    if (savedCount) setScanCount(Number(savedCount));
+
     const interval = setInterval(() => {
       setOnlineUsers(Math.floor(Math.random() * 5000) + 8000);
     }, 2500);
 
     return () => clearInterval(interval);
   }, []);
+
+  const scansLeft = Math.max(FREE_SCAN_LIMIT - scanCount, 0);
+  const isLocked = scansLeft <= 0;
 
   const handleImageUpload = (file) => {
     if (!file) return;
@@ -31,8 +39,26 @@ export default function Home() {
     reader.readAsDataURL(file);
   };
 
+  const startCheckout = async () => {
+    try {
+      const res = await fetch("/api/create-checkout-session", {
+        method: "POST",
+      });
+
+      const data = await res.json();
+
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        alert("Payment failed to start.");
+      }
+    } catch (error) {
+      alert("Payment failed to start.");
+    }
+  };
+
   const judgeAura = async () => {
-    if (!imageBase64) return;
+    if (!imageBase64 || isLocked) return;
 
     setLoading(true);
     setResult(null);
@@ -43,7 +69,7 @@ export default function Home() {
       "Calculating meme potential...",
       "Consulting the aura council...",
       "Detecting main character syndrome...",
-      "Reading background energy..."
+      "Reading background energy...",
     ];
 
     let stepIndex = 0;
@@ -57,8 +83,10 @@ export default function Home() {
     try {
       const res = await fetch("/api/judge", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64 })
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ imageBase64 }),
       });
 
       const data = await res.json();
@@ -66,43 +94,168 @@ export default function Home() {
 
       if (!res.ok) throw new Error(data.error || "Something went wrong");
 
+      const newCount = scanCount + 1;
+      setScanCount(newCount);
+      localStorage.setItem("aurajudge_scans", String(newCount));
+
       setResult(data);
     } catch (error) {
       clearInterval(interval);
 
       setResult({
-        nickname: "Broken Scanner",
-        rank: "Aura Scanner Crashed",
-        rarity: "Error • try another photo",
-        aura: 0,
-        npc: 100,
-        villain: 0,
-        impression: "The AI tripped over the WiFi cable.",
-        roast: "Even the scanner got confused 💀",
-        lore: "A mysterious error appeared and blocked the aura reading.",
-        advice: "Try again before the aura council notices."
+        nickname: "Aura Glitch",
+        rank: "Reality Bender",
+        rarity: "Corrupted Output",
+        aura: 77,
+        npc: 12,
+        villain: 84,
+        impression: "AI lost its mind.",
+        roast: "Even the algorithm got cooked 💀",
+        lore: "The scanner entered forbidden territory.",
+        advice: "Try another image.",
       });
     }
 
     setLoading(false);
   };
 
-  const saveResult = () => {
-    alert("For now, take a normal screenshot of the result card. We’ll build a proper clean export system later.");
+  const loadImage = (src) => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = src;
+    });
+  };
+
+  const wrapText = (ctx, text, x, y, maxWidth, lineHeight) => {
+    const words = String(text || "").split(" ");
+    let line = "";
+
+    for (let n = 0; n < words.length; n++) {
+      const testLine = line + words[n] + " ";
+      const metrics = ctx.measureText(testLine);
+
+      if (metrics.width > maxWidth && n > 0) {
+        ctx.fillText(line, x, y);
+        line = words[n] + " ";
+        y += lineHeight;
+      } else {
+        line = testLine;
+      }
+    }
+
+    ctx.fillText(line, x, y);
+    return y + lineHeight;
+  };
+
+  const roundRect = (ctx, x, y, width, height, radius) => {
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.lineTo(x + width - radius, y);
+    ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+    ctx.lineTo(x + width, y + height - radius);
+    ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+    ctx.lineTo(x + radius, y + height);
+    ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+    ctx.lineTo(x, y + radius);
+    ctx.quadraticCurveTo(x, y, x + radius, y);
+    ctx.closePath();
+  };
+
+  const drawCoverImage = (ctx, img, x, y, width, height, radius) => {
+    ctx.save();
+    roundRect(ctx, x, y, width, height, radius);
+    ctx.clip();
+
+    const imgRatio = img.width / img.height;
+    const boxRatio = width / height;
+
+    let drawWidth = width;
+    let drawHeight = height;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    if (imgRatio > boxRatio) {
+      drawHeight = height;
+      drawWidth = height * imgRatio;
+      offsetX = (width - drawWidth) / 2;
+    } else {
+      drawWidth = width;
+      drawHeight = width / imgRatio;
+      offsetY = (height - drawHeight) / 2;
+    }
+
+    ctx.drawImage(img, x + offsetX, y + offsetY, drawWidth, drawHeight);
+    ctx.restore();
+  };
+
+  const saveResult = async () => {
+    if (!result || !imageBase64) return;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 1080;
+    canvas.height = 1920;
+
+    const ctx = canvas.getContext("2d");
+
+    const gradient = ctx.createLinearGradient(0, 0, 0, 1920);
+    gradient.addColorStop(0, "#18181b");
+    gradient.addColorStop(0.45, "#050505");
+    gradient.addColorStop(1, "#000000");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 1080, 1920);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "900 42px Arial";
+    ctx.fillText("AuraJudge.ai", 70, 90);
+
+    ctx.fillStyle = "#71717a";
+    ctx.font = "700 26px Arial";
+    ctx.fillText("AI AURA REPORT", 760, 90);
+
+    const uploaded = await loadImage(imageBase64);
+    drawCoverImage(ctx, uploaded, 70, 140, 940, 620, 44);
+
+    ctx.fillStyle = "#71717a";
+    ctx.font = "700 24px Arial";
+    ctx.fillText("AI NICKNAME", 70, 830);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "900 72px Arial";
+    wrapText(ctx, result.nickname, 70, 910, 940, 78);
+
+    ctx.fillStyle = "#d4d4d8";
+    ctx.font = "800 42px Arial";
+    ctx.fillText(result.rank || "", 70, 1030);
+
+    ctx.fillStyle = "#4ade80";
+    ctx.font = "700 28px Arial";
+    ctx.fillText(result.rarity || "", 70, 1080);
+
+    const link = document.createElement("a");
+    link.download = "aurajudge-result.png";
+    link.href = canvas.toDataURL("image/png");
+    link.click();
   };
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-black via-zinc-950 to-black text-white flex flex-col items-center justify-center p-6 overflow-hidden">
       <div className="absolute top-6 right-6 text-sm text-zinc-500">
-        🔴 {onlineUsers.toLocaleString()} judging aura right now
+        🔴 {onlineUsers} judging aura right now
       </div>
 
       <h1 className="text-6xl md:text-7xl leading-tight font-black mb-3 text-white animate-pulse text-center">
         AuraJudge.ai
       </h1>
 
-      <p className="text-zinc-400 mb-8 text-center max-w-md">
-        Upload one picture and let AI create your aura nickname, rank, roast, and villain lore 💀
+      <p className="text-zinc-400 mb-3 text-center max-w-md">
+        Upload one picture and let AI create your aura nickname, rank, roast,
+        and villain lore 💀
+      </p>
+
+      <p className="text-zinc-500 mb-8 text-center text-sm">
+        {scansLeft} free scans left
       </p>
 
       <label className="mb-6 cursor-pointer bg-zinc-900 hover:bg-zinc-800 transition px-6 py-8 rounded-3xl flex flex-col items-center gap-3 w-full max-w-md shadow-2xl">
@@ -126,17 +279,39 @@ export default function Home() {
         />
       )}
 
-      <button
-        onClick={judgeAura}
-        disabled={loading || !imageBase64}
-        className="bg-white text-black px-7 py-3 rounded-2xl font-black hover:scale-105 hover:bg-zinc-200 transition shadow-lg disabled:opacity-40 disabled:cursor-not-allowed"
-      >
-        {loading ? "Judging..." : "Judge My Aura"}
-      </button>
+      {isLocked ? (
+        <div className="bg-zinc-900 p-6 rounded-3xl w-full max-w-md text-center shadow-2xl">
+          <p className="text-3xl mb-2">🔒</p>
+
+          <h2 className="text-2xl font-black mb-2">Free scans used</h2>
+
+          <p className="text-zinc-400 mb-5">
+            Unlock premium to continue judging aura.
+          </p>
+
+          <button
+            type="button"
+            onClick={() => setShowPremium(true)}
+            className="bg-white text-black px-7 py-3 rounded-2xl font-black hover:scale-105 transition"
+          >
+            Unlock Premium
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={judgeAura}
+          disabled={loading || !imageBase64}
+          className="bg-white text-black px-7 py-3 rounded-2xl font-black hover:scale-105 hover:bg-zinc-200 transition shadow-lg disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {loading ? "Judging..." : "Judge My Aura"}
+        </button>
+      )}
 
       {loading && (
         <div className="mt-6 flex flex-col items-center">
           <div className="w-12 h-12 border-4 border-zinc-700 border-t-white rounded-full animate-spin mb-4"></div>
+
           <p className="text-zinc-400 animate-pulse text-lg text-center">
             {loadingStep}
           </p>
@@ -145,13 +320,13 @@ export default function Home() {
 
       {result && !loading && (
         <>
-          <div
-            ref={cardRef}
-            className="mt-8 w-[390px] max-w-full bg-black text-white rounded-[32px] overflow-hidden shadow-2xl"
-          >
+          <div className="mt-8 w-[390px] max-w-full bg-black text-white rounded-[32px] overflow-hidden shadow-2xl">
             <div className="p-5 bg-gradient-to-b from-zinc-900 to-black">
               <div className="flex items-center justify-between mb-4">
-                <p className="text-sm font-black tracking-wide">AuraJudge.ai</p>
+                <p className="text-sm font-black tracking-wide">
+                  AuraJudge.ai
+                </p>
+
                 <p className="text-xs text-zinc-500">AI AURA REPORT</p>
               </div>
 
@@ -199,7 +374,9 @@ export default function Home() {
                   <p className="text-zinc-500 text-xs uppercase tracking-widest mb-1">
                     First Impression
                   </p>
-                  <p className="text-zinc-300 text-sm">{result.impression}</p>
+                  <p className="text-zinc-300 text-sm">
+                    {result.impression}
+                  </p>
                 </div>
 
                 <div>
@@ -232,12 +409,50 @@ export default function Home() {
           </div>
 
           <button
+            type="button"
             onClick={saveResult}
             className="mt-4 bg-zinc-100 text-black px-6 py-3 rounded-2xl font-black hover:scale-105 transition"
           >
             Save Result 📸
           </button>
         </>
+      )}
+
+      {showPremium && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-6 z-50 pointer-events-auto">
+          <div className="bg-zinc-900 rounded-3xl p-6 max-w-md w-full shadow-2xl relative z-[60]">
+            <h2 className="text-3xl font-black mb-2">AuraJudge Premium</h2>
+
+            <p className="text-zinc-400 mb-5">
+              Unlock the full aura experience.
+            </p>
+
+            <div className="space-y-3 mb-6 text-zinc-300">
+              <p>✅ Unlimited aura scans</p>
+              <p>✅ Global Aura Leaderboard</p>
+              <p>✅ Deep Villain Analysis</p>
+              <p>✅ Compare aura with friends</p>
+              <p>✅ Rare mythic ranks</p>
+              <p>✅ Premium result cards</p>
+            </div>
+
+            <button
+              type="button"
+              onClick={startCheckout}
+              className="w-full bg-white text-black py-3 rounded-2xl font-black mb-3"
+            >
+              Unlock Premium — $4.99/month
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowPremium(false)}
+              className="w-full bg-zinc-800 text-white py-3 rounded-2xl font-bold"
+            >
+              Maybe later
+            </button>
+          </div>
+        </div>
       )}
     </main>
   );
