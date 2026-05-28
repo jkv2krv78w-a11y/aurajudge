@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { supabase } from "@/lib/supabase";
 
 const FREE_SCAN_LIMIT = 3;
 
@@ -14,6 +15,20 @@ export default function Home() {
   const [scanCount, setScanCount] = useState(0);
   const [showPremium, setShowPremium] = useState(false);
   const [isPremium, setIsPremium] = useState(false);
+  const [leaderboard, setLeaderboard] = useState([]);
+
+  const scansLeft = Math.max(FREE_SCAN_LIMIT - scanCount, 0);
+  const isLocked = !isPremium && scansLeft <= 0;
+
+  const fetchLeaderboard = async () => {
+    const { data } = await supabase
+      .from("aura_scans")
+      .select("*")
+      .order("aura", { ascending: false })
+      .limit(5);
+
+    if (data) setLeaderboard(data);
+  };
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -23,8 +38,7 @@ export default function Home() {
       setIsPremium(true);
       window.history.replaceState({}, "", "/");
     } else {
-      const savedPremium = localStorage.getItem("aurajudge_premium");
-      setIsPremium(savedPremium === "true");
+      setIsPremium(localStorage.getItem("aurajudge_premium") === "true");
     }
 
     const today = new Date().toDateString();
@@ -39,6 +53,8 @@ export default function Home() {
       setScanCount(0);
     }
 
+    fetchLeaderboard();
+
     const interval = setInterval(() => {
       setOnlineUsers(Math.floor(Math.random() * 5000) + 8000);
     }, 2500);
@@ -46,12 +62,8 @@ export default function Home() {
     return () => clearInterval(interval);
   }, []);
 
-  const scansLeft = Math.max(FREE_SCAN_LIMIT - scanCount, 0);
-  const isLocked = !isPremium && scansLeft <= 0;
-
   const handleImageUpload = (file) => {
     if (!file) return;
-
     setImage(URL.createObjectURL(file));
     setResult(null);
 
@@ -68,12 +80,9 @@ export default function Home() {
 
       const data = await res.json();
 
-      if (data.url) {
-        window.location.href = data.url;
-      } else {
-        alert("Payment failed to start.");
-      }
-    } catch (error) {
+      if (data.url) window.location.href = data.url;
+      else alert("Payment failed to start.");
+    } catch {
       alert("Payment failed to start.");
     }
   };
@@ -104,16 +113,14 @@ export default function Home() {
     try {
       const res = await fetch("/api/judge", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ imageBase64 }),
       });
 
       const data = await res.json();
       clearInterval(interval);
 
-      if (!res.ok) throw new Error(data.error || "Something went wrong");
+      if (!res.ok) throw new Error("AI failed");
 
       if (!isPremium) {
         const newCount = scanCount + 1;
@@ -122,7 +129,39 @@ export default function Home() {
       }
 
       setResult(data);
-    } catch (error) {
+
+      try {
+        const fileName = `${Date.now()}.png`;
+        const response = await fetch(imageBase64);
+        const blob = await response.blob();
+
+        const { error: uploadError } = await supabase.storage
+          .from("aura-images")
+          .upload(fileName, blob);
+
+        if (!uploadError) {
+          const {
+            data: { publicUrl },
+          } = supabase.storage.from("aura-images").getPublicUrl(fileName);
+
+          await supabase.from("aura_scans").insert([
+            {
+              nickname: data.nickname,
+              rank: data.rank,
+              rarity: data.rarity,
+              aura: data.aura,
+              npc: data.npc,
+              villain: data.villain,
+              image_url: publicUrl,
+            },
+          ]);
+
+          fetchLeaderboard();
+        }
+      } catch {
+        console.log("Leaderboard save failed");
+      }
+    } catch {
       clearInterval(interval);
 
       setResult({
@@ -147,31 +186,28 @@ export default function Home() {
     setLoading(false);
   };
 
-  const loadImage = (src) => {
-    return new Promise((resolve, reject) => {
+  const loadImage = (src) =>
+    new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => resolve(img);
       img.onerror = reject;
       img.src = src;
     });
-  };
 
   const wrapText = (ctx, text, x, y, maxWidth, lineHeight) => {
     const words = String(text || "").split(" ");
     let line = "";
 
-    for (let n = 0; n < words.length; n++) {
-      const testLine = line + words[n] + " ";
-      const metrics = ctx.measureText(testLine);
-
-      if (metrics.width > maxWidth && n > 0) {
+    words.forEach((word, index) => {
+      const testLine = line + word + " ";
+      if (ctx.measureText(testLine).width > maxWidth && index > 0) {
         ctx.fillText(line, x, y);
-        line = words[n] + " ";
+        line = word + " ";
         y += lineHeight;
       } else {
         line = testLine;
       }
-    }
+    });
 
     ctx.fillText(line, x, y);
     return y + lineHeight;
@@ -226,11 +262,11 @@ export default function Home() {
     canvas.height = 1920;
 
     const ctx = canvas.getContext("2d");
-
     const gradient = ctx.createLinearGradient(0, 0, 0, 1920);
     gradient.addColorStop(0, "#18181b");
     gradient.addColorStop(0.45, "#050505");
     gradient.addColorStop(1, "#000000");
+
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, 1080, 1920);
 
@@ -261,327 +297,279 @@ export default function Home() {
     ctx.font = "700 28px Arial";
     ctx.fillText(result.rarity || "", 70, 1080);
 
-    const statY = 1135;
-    const statW = 293;
-    const statH = 135;
-    const gap = 30;
-
-    const stats = [
-      ["Aura", result.aura],
-      ["NPC", `${result.npc}%`],
-      ["Villain", `${result.villain}%`],
-    ];
-
-    stats.forEach((stat, i) => {
-      const x = 70 + i * (statW + gap);
-
-      ctx.fillStyle = "#18181b";
-      roundRect(ctx, x, statY, statW, statH, 34);
-      ctx.fill();
-
-      ctx.fillStyle = "#71717a";
-      ctx.font = "700 24px Arial";
-      ctx.fillText(stat[0], x + 28, statY + 45);
-
-      ctx.fillStyle = "#ffffff";
-      ctx.font = "900 48px Arial";
-      ctx.fillText(String(stat[1]), x + 28, statY + 105);
-    });
-
-    let y = 1335;
-
-    const sections = [
-      ["FIRST IMPRESSION", result.impression],
-      ["ROAST", result.roast],
-      ["VILLAIN LORE", result.lore],
-      ["FINAL ADVICE", result.advice],
-    ];
-
-    sections.forEach(([title, text]) => {
-      ctx.fillStyle = "#71717a";
-      ctx.font = "700 23px Arial";
-      ctx.fillText(title, 70, y);
-
-      y += 42;
-
-      ctx.fillStyle = title === "VILLAIN LORE" ? "#a1a1aa" : "#d4d4d8";
-      ctx.font = title === "VILLAIN LORE" ? "italic 30px Arial" : "30px Arial";
-      y = wrapText(ctx, text, 70, y, 940, 42);
-
-      y += 38;
-    });
-
-    if (result.tips && result.tips.length > 0) {
-      ctx.fillStyle = "#71717a";
-      ctx.font = "700 23px Arial";
-      ctx.fillText("AURA TIPS", 70, y);
-
-      y += 42;
-
-      ctx.fillStyle = "#d4d4d8";
-      ctx.font = "30px Arial";
-
-      result.tips.slice(0, 3).forEach((tip) => {
-        y = wrapText(ctx, `✨ ${tip}`, 70, y, 940, 42);
-        y += 12;
-      });
-    }
-
-    ctx.fillStyle = "#3f3f46";
-    ctx.font = "700 24px Arial";
-    ctx.fillText("Share your aura", 70, 1845);
-
-    ctx.fillStyle = "#71717a";
-    ctx.font = "700 24px Arial";
-    ctx.fillText("AuraJudge.ai", 820, 1845);
-
     const link = document.createElement("a");
     link.download = "aurajudge-result.png";
     link.href = canvas.toDataURL("image/png");
     link.click();
   };
 
+  const Leaderboard = () => (
+    <div className="bg-zinc-900 rounded-3xl p-5 shadow-2xl w-full">
+      <h2 className="text-2xl font-black mb-4">🏆 Global Aura</h2>
+
+      <div className="space-y-3">
+        {leaderboard.length === 0 && (
+          <p className="text-zinc-500 text-sm">No scans yet. Be the first.</p>
+        )}
+
+        {leaderboard.map((user, index) => (
+          <div
+            key={user.id}
+            className="flex items-center gap-3 bg-black rounded-2xl p-3"
+          >
+            <div className="text-lg font-black w-7">#{index + 1}</div>
+
+            <img
+              src={user.image_url}
+              alt="leaderboard"
+              className="w-12 h-12 rounded-xl object-cover"
+            />
+
+            <div className="flex-1">
+              <p className="font-black text-sm">{user.nickname}</p>
+              <p className="text-zinc-500 text-xs">{user.rarity}</p>
+            </div>
+
+            <p className="text-yellow-300 font-black text-xl">{user.aura}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
   return (
-    <main className="min-h-screen bg-gradient-to-b from-black via-zinc-950 to-black text-white flex flex-col items-center justify-center p-6 overflow-hidden">
+    <main className="min-h-screen bg-gradient-to-b from-black via-zinc-950 to-black text-white p-6 overflow-x-hidden">
       <div className="absolute top-6 right-6 text-sm text-zinc-500">
         🔴 {onlineUsers} judging aura right now
       </div>
 
-      <h1 className="text-6xl md:text-7xl leading-tight font-black mb-3 text-white animate-pulse text-center">
-        AuraJudge.ai
-      </h1>
-      {isPremium && (
-  <div className="mb-4 bg-yellow-400 text-black px-4 py-2 rounded-full font-black text-sm shadow-lg">
-    👑 Premium Unlocked
-  </div>
-)}
+      <div className="mx-auto max-w-6xl grid grid-cols-1 xl:grid-cols-[340px_1fr] gap-6 items-start">
+        <aside className="hidden xl:block sticky top-6">
+          <Leaderboard />
+        </aside>
 
-      <p className="text-zinc-400 mb-3 text-center max-w-md">
-        Upload one picture and let AI create your aura nickname, rank, roast,
-        and villain lore 💀
-      </p>
+        <section className="flex flex-col items-center justify-center">
+          <h1 className="text-6xl md:text-7xl leading-tight font-black mb-3 text-white animate-pulse text-center">
+            AuraJudge.ai
+          </h1>
 
-      <p className="text-zinc-500 mb-8 text-center text-sm">
-        {isPremium
-          ? "Premium unlocked • unlimited scans"
-          : `${scansLeft} free scans left`}
-      </p>
+          {isPremium && (
+            <div className="mb-4 bg-yellow-400 text-black px-4 py-2 rounded-full font-black text-sm shadow-lg">
+              👑 Premium Unlocked
+            </div>
+          )}
 
-      <label className="mb-6 cursor-pointer bg-zinc-900 hover:bg-zinc-800 transition px-6 py-8 rounded-3xl flex flex-col items-center gap-3 w-full max-w-md shadow-2xl">
-        <span className="text-2xl">📸</span>
-        <p className="font-bold">Upload your picture</p>
-        <p className="text-zinc-400 text-sm">JPG, PNG or JPEG</p>
-
-        <input
-          type="file"
-          accept="image/*"
-          onChange={(e) => handleImageUpload(e.target.files[0])}
-          className="hidden"
-        />
-      </label>
-
-      {image && (
-        <img
-          src={image}
-          alt="preview"
-          className="w-64 h-64 object-cover rounded-3xl mb-6 shadow-2xl"
-        />
-      )}
-
-      {isLocked ? (
-        <div className="bg-zinc-900 p-6 rounded-3xl w-full max-w-md text-center shadow-2xl">
-          <p className="text-3xl mb-2">🔒</p>
-
-          <h2 className="text-2xl font-black mb-2">Free scans used</h2>
-
-          <p className="text-zinc-400 mb-5">
-            Unlock premium to continue judging aura.
+          <p className="text-zinc-400 mb-3 text-center max-w-md">
+            Upload one picture and let AI create your aura nickname, rank,
+            roast, and villain lore 💀
           </p>
 
-          <button
-            type="button"
-            onClick={() => setShowPremium(true)}
-            className="bg-white text-black px-7 py-3 rounded-2xl font-black hover:scale-105 transition"
-          >
-            Unlock Premium
-          </button>
-        </div>
-      ) : (
-        <button
-          type="button"
-          onClick={judgeAura}
-          disabled={loading || !imageBase64}
-          className="bg-white text-black px-7 py-3 rounded-2xl font-black hover:scale-105 hover:bg-zinc-200 transition shadow-lg disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          {loading ? "Judging..." : "Judge My Aura"}
-        </button>
-      )}
-
-      {loading && (
-        <div className="mt-6 flex flex-col items-center">
-          <div className="w-12 h-12 border-4 border-zinc-700 border-t-white rounded-full animate-spin mb-4"></div>
-          <p className="text-zinc-400 animate-pulse text-lg text-center">
-            {loadingStep}
+          <p className="text-zinc-500 mb-8 text-center text-sm">
+            {isPremium
+              ? "Premium unlocked • unlimited scans"
+              : `${scansLeft} free scans left`}
           </p>
-        </div>
-      )}
 
-      {result && !loading && (
-        <>
-          <div
-  className={`mt-8 w-[390px] max-w-full text-white rounded-[32px] overflow-hidden shadow-2xl transition-all duration-500 ${
-    result.aura >= 90
-      ? "bg-gradient-to-br from-yellow-400 via-orange-500 to-red-500 animate-pulse scale-[1.02]"
-      : "bg-black"
-  }`}
->
-            <div className="p-5 bg-gradient-to-b from-zinc-900 to-black">
-              <div className="flex items-center justify-between mb-4">
-                <p className="text-sm font-black tracking-wide">
-                  AuraJudge.ai
-                </p>
-                <p className="text-xs text-zinc-500">AI AURA REPORT</p>
-              </div>
+          <label className="mb-6 cursor-pointer bg-zinc-900 hover:bg-zinc-800 transition px-6 py-8 rounded-3xl flex flex-col items-center gap-3 w-full max-w-md shadow-2xl">
+            <span className="text-2xl">📸</span>
+            <p className="font-bold">Upload your picture</p>
+            <p className="text-zinc-400 text-sm">JPG, PNG or JPEG</p>
 
-              {image && (
-                <img
-                  src={image}
-                  alt="aura result"
-                  className="w-full h-72 object-cover rounded-3xl mb-5"
-                />
-              )}
+            <input
+              type="file"
+              accept="image/*"
+              onChange={(e) => handleImageUpload(e.target.files[0])}
+              className="hidden"
+            />
+          </label>
 
-              <p className="text-zinc-500 text-xs uppercase tracking-widest mb-1">
-                AI Nickname
+          {image && (
+            <img
+              src={image}
+              alt="preview"
+              className="w-64 h-64 object-cover rounded-3xl mb-6 shadow-2xl"
+            />
+          )}
+
+          {isLocked ? (
+            <div className="bg-zinc-900 p-6 rounded-3xl w-full max-w-md text-center shadow-2xl">
+              <p className="text-3xl mb-2">🔒</p>
+              <h2 className="text-2xl font-black mb-2">Free scans used</h2>
+              <p className="text-zinc-400 mb-5">
+                Unlock premium to continue judging aura.
               </p>
 
-              <h2 className="text-4xl font-black leading-tight mb-2">
-                {result.nickname}
-              </h2>
+              <button
+                type="button"
+                onClick={() => setShowPremium(true)}
+                className="bg-white text-black px-7 py-3 rounded-2xl font-black hover:scale-105 transition"
+              >
+                Unlock Premium
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={judgeAura}
+              disabled={loading || !imageBase64}
+              className="bg-white text-black px-7 py-3 rounded-2xl font-black hover:scale-105 hover:bg-zinc-200 transition shadow-lg disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {loading ? "Judging..." : "Judge My Aura"}
+            </button>
+          )}
 
-              <p className="text-xl font-bold text-zinc-300 mb-2">
-                {result.rank}
+          {loading && (
+            <div className="mt-6 flex flex-col items-center">
+              <div className="w-12 h-12 border-4 border-zinc-700 border-t-white rounded-full animate-spin mb-4"></div>
+              <p className="text-zinc-400 animate-pulse text-lg text-center">
+                {loadingStep}
               </p>
+            </div>
+          )}
 
-              <p
-  className={`text-sm mb-5 font-bold ${
-    result.aura >= 90
-      ? "text-yellow-200 animate-pulse"
-      : "text-green-400"
-  }`}
->
-  {result.rarity}
-</p>
-{result.aura >= 90 && (
-  <div className="mb-5 bg-yellow-300 text-black text-xs font-black px-3 py-2 rounded-full inline-block animate-bounce">
-    ⚡ MYTHIC AURA DETECTED
-  </div>
-)}
+          {result && !loading && (
+            <>
+              <div
+                className={`mt-8 w-[390px] max-w-full text-white rounded-[32px] overflow-hidden shadow-2xl transition-all duration-500 ${
+                  result.aura >= 90
+                    ? "bg-gradient-to-br from-yellow-400 via-orange-500 to-red-500 animate-pulse scale-[1.02]"
+                    : "bg-black"
+                }`}
+              >
+                <div className="p-5 bg-gradient-to-b from-zinc-900 to-black">
+                  <div className="flex items-center justify-between mb-4">
+                    <p className="text-sm font-black tracking-wide">
+                      AuraJudge.ai
+                    </p>
+                    <p className="text-xs text-zinc-500">AI AURA REPORT</p>
+                  </div>
 
-              <div className="grid grid-cols-3 gap-2 mb-5">
-                <div className="bg-zinc-900 rounded-2xl p-3">
-                  <p className="text-zinc-500 text-xs">Aura</p>
-                  <p className="text-xl font-black">{result.aura}</p>
-                </div>
+                  {image && (
+                    <img
+                      src={image}
+                      alt="aura result"
+                      className="w-full h-72 object-cover rounded-3xl mb-5"
+                    />
+                  )}
 
-                <div className="bg-zinc-900 rounded-2xl p-3">
-                  <p className="text-zinc-500 text-xs">NPC</p>
-                  <p className="text-xl font-black">{result.npc}%</p>
-                </div>
-
-                <div className="bg-zinc-900 rounded-2xl p-3">
-                  <p className="text-zinc-500 text-xs">Villain</p>
-                  <p className="text-xl font-black">{result.villain}%</p>
-                </div>
-              </div>
-
-              <div className="space-y-4">
-                <div>
                   <p className="text-zinc-500 text-xs uppercase tracking-widest mb-1">
-                    First Impression
-                  </p>
-                  <p className="text-zinc-300 text-sm">
-                    {result.impression}
-                  </p>
-                </div>
-
-                <div>
-                  <p className="text-zinc-500 text-xs uppercase tracking-widest mb-1">
-                    Roast
-                  </p>
-                  <p className="text-zinc-300 text-sm">{result.roast}</p>
-                </div>
-
-                <div>
-                  <p className="text-zinc-500 text-xs uppercase tracking-widest mb-1">
-                    Villain Lore
-                  </p>
-                  <p className="text-zinc-400 text-sm italic">{result.lore}</p>
-                </div>
-
-                <div>
-                  <p className="text-zinc-500 text-xs uppercase tracking-widest mb-1">
-                    Final Advice
-                  </p>
-                  <p className="text-zinc-300 text-sm">{result.advice}</p>
-                </div>
-
-                <div>
-                  <p className="text-zinc-500 text-xs uppercase tracking-widest mb-2">
-                    Aura Improvement Tips
+                    AI Nickname
                   </p>
 
-                  <div className="space-y-2">
-                    {result.tips?.map((tip, index) => (
-                      <div
-                        key={index}
-                        className="bg-zinc-900 rounded-2xl p-3 text-sm text-zinc-300"
-                      >
-                        ✨ {tip}
+                  <h2 className="text-4xl font-black leading-tight mb-2">
+                    {result.nickname}
+                  </h2>
+
+                  <p className="text-xl font-bold text-zinc-300 mb-2">
+                    {result.rank}
+                  </p>
+
+                  <p
+                    className={`text-sm mb-5 font-bold ${
+                      result.aura >= 90
+                        ? "text-yellow-200 animate-pulse"
+                        : "text-green-400"
+                    }`}
+                  >
+                    {result.rarity}
+                  </p>
+
+                  {result.aura >= 90 && (
+                    <div className="mb-5 bg-yellow-300 text-black text-xs font-black px-3 py-2 rounded-full inline-block animate-bounce">
+                      ⚡ MYTHIC AURA DETECTED
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-3 gap-2 mb-5">
+                    <div className="bg-zinc-900 rounded-2xl p-3">
+                      <p className="text-zinc-500 text-xs">Aura</p>
+                      <p className="text-xl font-black">{result.aura}</p>
+                    </div>
+
+                    <div className="bg-zinc-900 rounded-2xl p-3">
+                      <p className="text-zinc-500 text-xs">NPC</p>
+                      <p className="text-xl font-black">{result.npc}%</p>
+                    </div>
+
+                    <div className="bg-zinc-900 rounded-2xl p-3">
+                      <p className="text-zinc-500 text-xs">Villain</p>
+                      <p className="text-xl font-black">{result.villain}%</p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div>
+                      <p className="text-zinc-500 text-xs uppercase tracking-widest mb-1">
+                        First Impression
+                      </p>
+                      <p className="text-zinc-300 text-sm">
+                        {result.impression}
+                      </p>
+                    </div>
+
+                    <div>
+                      <p className="text-zinc-500 text-xs uppercase tracking-widest mb-1">
+                        Roast
+                      </p>
+                      <p className="text-zinc-300 text-sm">{result.roast}</p>
+                    </div>
+
+                    <div>
+                      <p className="text-zinc-500 text-xs uppercase tracking-widest mb-1">
+                        Villain Lore
+                      </p>
+                      <p className="text-zinc-400 text-sm italic">
+                        {result.lore}
+                      </p>
+                    </div>
+
+                    <div>
+                      <p className="text-zinc-500 text-xs uppercase tracking-widest mb-1">
+                        Final Advice
+                      </p>
+                      <p className="text-zinc-300 text-sm">{result.advice}</p>
+                    </div>
+
+                    <div>
+                      <p className="text-zinc-500 text-xs uppercase tracking-widest mb-2">
+                        Aura Improvement Tips
+                      </p>
+
+                      <div className="space-y-2">
+                        {result.tips?.map((tip, index) => (
+                          <div
+                            key={index}
+                            className="bg-zinc-900 rounded-2xl p-3 text-sm text-zinc-300"
+                          >
+                            ✨ {tip}
+                          </div>
+                        ))}
                       </div>
-                    ))}
+                    </div>
+                  </div>
+
+                  <div className="mt-6 pt-4 flex items-center justify-between">
+                    <p className="text-xs text-zinc-600">Share your aura</p>
+                    <p className="text-xs text-zinc-500">AuraJudge.ai</p>
                   </div>
                 </div>
               </div>
 
-              <div className="mt-6 pt-4 flex items-center justify-between">
-                <p className="text-xs text-zinc-600">Share your aura</p>
-                <p className="text-xs text-zinc-500">AuraJudge.ai</p>
-              </div>
-            </div>
+              <button
+                type="button"
+                onClick={saveResult}
+                className="mt-4 bg-zinc-100 text-black px-6 py-3 rounded-2xl font-black hover:scale-105 transition"
+              >
+                Save Result 📸
+              </button>
+            </>
+          )}
+
+          <div className="xl:hidden mt-8 w-full max-w-md">
+            <Leaderboard />
           </div>
-
-          <button
-            type="button"
-            onClick={saveResult}
-            className="mt-4 bg-zinc-100 text-black px-6 py-3 rounded-2xl font-black hover:scale-105 transition"
-          >
-            Save Result 📸
-          </button>
-        </>
-      )}
-      {result && !loading && (
-  <div className="mt-6 bg-zinc-900 p-5 rounded-3xl w-full max-w-md shadow-2xl">
-    <h2 className="text-2xl font-black mb-3">
-      🏆 Aura Leaderboard
-    </h2>
-
-    <div className="space-y-3 text-zinc-300">
-      <p>🥇 Mythic Menace — 99 Aura</p>
-      <p>🥈 Shadow CEO — 96 Aura</p>
-      <p>🥉 Final Boss Jr — 94 Aura</p>
-    </div>
-
-    {!isPremium && (
-      <button
-        onClick={() => setShowPremium(true)}
-        className="mt-5 w-full bg-white text-black py-3 rounded-2xl font-black"
-      >
-        Unlock Leaderboards
-      </button>
-    )}
-  </div>
-)}
+        </section>
+      </div>
 
       {showPremium && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-6 z-50 pointer-events-auto">
