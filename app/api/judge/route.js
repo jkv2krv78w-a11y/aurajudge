@@ -4,13 +4,52 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+function applyViralScoreBoost(result) {
+  const roll = Math.random();
+
+  let aura;
+
+  if (roll < 0.1) {
+    aura = Math.floor(Math.random() * 11) + 90; // 90-100 mythic
+  } else if (roll < 0.35) {
+    aura = Math.floor(Math.random() * 20) + 70; // 70-89 strong
+  } else if (roll < 0.75) {
+    aura = Math.floor(Math.random() * 30) + 40; // 40-69 normal
+  } else {
+    aura = Math.floor(Math.random() * 30) + 10; // 10-39 cooked
+  }
+
+  const npc = Math.max(0, Math.min(100, 100 - aura + Math.floor(Math.random() * 21) - 10));
+  const villain = Math.max(0, Math.min(100, aura + Math.floor(Math.random() * 31) - 15));
+
+  let rarity = result.rarity;
+
+  if (aura >= 95) rarity = "Mythic • Top 0.3%";
+  else if (aura >= 90) rarity = "Legendary • Top 1%";
+  else if (aura >= 80) rarity = "Epic • Top 5%";
+  else if (aura >= 70) rarity = "Rare • Top 12%";
+  else if (aura >= 50) rarity = "Uncommon • Mid Aura";
+  else rarity = "Common • Cooked Aura";
+
+  return {
+    ...result,
+    aura,
+    npc,
+    villain,
+    rarity,
+  };
+}
+
 export async function POST(req) {
   try {
     const { imageBase64 } = await req.json();
 
+    if (!imageBase64) {
+      return Response.json({ error: "No image provided" }, { status: 400 });
+    }
+
     const response = await openai.responses.create({
       model: "gpt-4.1-mini",
-
       input: [
         {
           role: "user",
@@ -44,6 +83,20 @@ STYLE:
 - meme-like
 - screenshot-worthy
 - funny
+- slightly dramatic
+
+IMPORTANT:Give 3 SHORT aura improvement tips.
+They should be funny but semi-useful.
+Focus on:
+- pose
+- lighting
+- outfit
+- expression
+- background
+- confidence
+- camera angle
+The scores will be adjusted by the app after your response.
+Focus on funny nickname, rank, impression, roast, lore, and advice.
 
 STRICT RULES:
 nickname: 1-3 words max
@@ -64,17 +117,21 @@ JSON FORMAT:
   "nickname": "string",
   "rank": "string",
   "rarity": "string",
-  "aura": 0,
-  "npc": 0,
-  "villain": 0,
+  "aura": 50,
+  "npc": 50,
+  "villain": 50,
   "impression": "string",
   "roast": "string",
   "lore": "string",
-  "advice": "string"
+  "advice": "string",
+  "tips": [
+    "string",
+    "string",
+    "string"
+  ]
 }
               `,
             },
-
             {
               type: "input_image",
               image_url: imageBase64,
@@ -89,15 +146,11 @@ JSON FORMAT:
       .replace(/```/g, "")
       .trim();
 
-    console.log("RAW AI:", cleaned);
-
     let result;
 
     try {
       result = JSON.parse(cleaned);
     } catch (err) {
-      console.error("JSON PARSE ERROR:", err);
-
       result = {
         nickname: "Aura Glitch",
         rank: "Reality Bender",
@@ -112,8 +165,20 @@ JSON FORMAT:
       };
     }
 
-    return Response.json(result);
+   const boostedResult = applyViralScoreBoost(result);
 
+if (
+  !boostedResult.tips ||
+  !Array.isArray(boostedResult.tips) ||
+  boostedResult.tips.length === 0
+) {
+  boostedResult.tips = [
+    "Stop posing like an NPC.",
+    "Better lighting = instant aura buff.",
+    "Background currently lowering rank."
+  ];
+}
+    return Response.json(boostedResult);
   } catch (error) {
     console.error("OPENAI ERROR:", error);
 
