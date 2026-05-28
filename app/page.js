@@ -21,14 +21,23 @@ export default function Home() {
   const isLocked = !isPremium && scansLeft <= 0;
 
   const fetchLeaderboard = async () => {
-    const { data } = await supabase
-      .from("aura_scans")
-      .select("*")
-      .order("aura", { ascending: false })
-      .limit(5);
+  const now = new Date();
 
-    if (data) setLeaderboard(data);
-  };
+  const startOfMonth = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    1
+  ).toISOString();
+
+  const { data } = await supabase
+    .from("aura_scans")
+    .select("*")
+    .gte("created_at", startOfMonth)
+    .order("aura", { ascending: false })
+    .limit(5);
+
+  if (data) setLeaderboard(data);
+};
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
